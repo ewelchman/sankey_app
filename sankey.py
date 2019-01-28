@@ -188,15 +188,19 @@ def make_sankey_dfs(df, offense='', defense='', verbosity=0):
             
         # If source play is a penalty
         elif src_play['is_penalty']:
-            print('src_play.off_fieldpos:',src_play['off_fieldpos'])
-            print('tgt_play.off_fieldpos:',tgt_play['off_fieldpos'],'dist:',tgt_play['dist'])
-            src_1d_yd = int(src_play['off_fieldpos']) + int(src_play['dist'])
-            tgt_1d_yd = int(tgt_play['off_fieldpos']) + int(tgt_play['dist'])
-            if (int(tgt_play['down']) == 1) and (src_1d_yd != tgt_1d_yd):
-                # First down by penalty
-                tgt_node = 16
+            # Check for end of half/game
+            if str(tgt_play['dist'])=='nan':
+                print('src_play',src_play)
+                print('tgt_play',tgt_play)
+                tgt_node = 13
             else:
-                tgt_node = get_node( tgt_play )
+                src_1d_yd = int(src_play['off_fieldpos']) + int(src_play['dist'])
+                tgt_1d_yd = int(tgt_play['off_fieldpos']) + int(tgt_play['dist'])
+                if (int(tgt_play['down']) == 1) and (src_1d_yd != tgt_1d_yd):
+                    # First down by penalty
+                    tgt_node = 16
+                else:
+                    tgt_node = get_node( tgt_play )
         
         # If source play is normal offensive play, check for 1st down yardage
         elif src_play['yds_gained'] != 'x':
@@ -331,17 +335,19 @@ def sankey_diagram(nodes_df, flows_df):
     return fig
 
 
-def time_filter( df, season, week_min=1, week_max=17 ):
+def time_filter( df, season, weeks=[1] ):
 	time_filter = [
 		True if (
 			(int(ssn) == season) &
-			(int(wk) >= week_min) & (int(wk) <= week_max)
+			(int(wk) in weeks)
 		)
 		else False for ( ssn, wk ) in zip(
 			df.season.values, df.week.values
 		)
 	]
 	subdf = df[time_filter]
+	print("Seasons selected by filter")
+	print(sorted(subdf.season.unique()))
 	return subdf
 
 def team_filter( df, offense='', defense='' ):
@@ -358,42 +364,55 @@ def team_filter( df, offense='', defense='' ):
 	else:
 		return df
 
-
-## Sample onegame df
-#onegame = all_pbp[
-#    (all_pbp.season == 2018) &
-#    (all_pbp.week == 1) &
-#    (all_pbp.home == 'DEN')
-#]
-
-
+######## Here begins describing the layout #########################
 external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
 app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
 
 
 app.layout = html.Div([
-	# Radio selector for filtering by offense or defense
-	dcc.RadioItems(
-		id='dropdown-offdef',
-		options=[{'label':i, 'value':i} for i in ['offense','defense']],
-		value='offense'
+	# Page Title/Heading
+	html.H1(
+		children='NFL Sankey',
+		style={'textAlign':'center'}
 	),
-	# Dropdown selector for team name to filter by
+	html.Div(
+		children='Visualizing game flow based on down and distance',
+		style={'textAlign':'center'}
+	),
+	# Selectors for Filters
 	html.Div([
+		# Radio selector for filtering by offense or defense
+		html.Label('Select plays by:'),
+		dcc.RadioItems(
+			id='dropdown-offdef',
+			options=[{'label':i, 'value':i} for i in ['offense','defense']],
+			value='offense'
+		),
+		# Dropdown selector for team name to filter by
+		html.Label('Team'),
 		dcc.Dropdown(
 			id='team-name',
-			options=[{'label': i, 'value': i} for i in all_pbp['poss'].unique()],
-			value='DEN'
+			options=[{'label': i, 'value': i} for i in sorted(all_pbp['poss'].unique())],
+			value='ARI'
+		),
+		# Dropdown selector for selecting season
+		html.Label('Season'),
+		dcc.Dropdown(
+			id='season-dropdown',
+			options=[{'label': i, 'value': i} for i in sorted(all_pbp['season'].unique())],
+			value=all_pbp.season.max()
+		),
+		# Dropdown selector for selecting individual weeks
+		html.Label('Week(s)'),
+		dcc.Checklist(
+			id='week-checklist',
+			options=[{'label': i, 'value': i} for i in sorted(all_pbp['week'].unique())],
+			values=[all_pbp.week.min()],
+			labelStyle={'display':'inline-block'}
 		)
-	]),
-	# Slider for choosing season
-	dcc.Slider(
-		id='season-slider',
-		min=all_pbp.season.min(),
-		max=all_pbp.season.max(),
-		marks={str(y):str(y) for y in all_pbp.season.unique()},
-		value=all_pbp.season.max()
-	),
+	], style={'columnCount':2}),
+
+	# Include actual graphic
 	html.Div([
 		dcc.Graph(id='sankey-graphic')
 	])
@@ -404,9 +423,10 @@ app.layout = html.Div([
     dash.dependencies.Output('sankey-graphic', 'figure'),
     [dash.dependencies.Input('dropdown-offdef', 'value'),
 	dash.dependencies.Input('team-name', 'value'),
-	dash.dependencies.Input('season-slider', 'value')]
+	dash.dependencies.Input('season-dropdown', 'value'),
+	dash.dependencies.Input('week-checklist', 'values')]
 )
-def update_graph(filter_by, teamname, season):
+def update_graph(filter_by, teamname, season, weeks):
 
 	print("Our parameters are:")
 	print("filter_by",filter_by)
@@ -414,12 +434,12 @@ def update_graph(filter_by, teamname, season):
 	print("season",season)
 
 	# Filter play_by_play by time
-	time_filtered_games = time_filter( all_pbp, season, week_min=1, week_max=1 )
+	time_filtered_games = time_filter( all_pbp, season, weeks=weeks )
 
 	# Filter for games including selected team
 	off_tm = teamname if filter_by=='offense' else ''
 	def_tm = teamname if filter_by=='defense' else ''
-	team_filtered_games = team_filter( all_pbp, offense=off_tm, defense=def_tm )
+	team_filtered_games = team_filter( time_filtered_games, offense=off_tm, defense=def_tm )
 
 	if filter_by == 'offense':
 		nodes, flows = make_sankey_dfs( team_filtered_games, offense=teamname )
