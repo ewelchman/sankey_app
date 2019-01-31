@@ -1,18 +1,27 @@
 # -*- coding: utf-8 -*-
+
+### TODO
+# Allow for color by EPA, success, run/pass
+# Clean everything up to use the list of dictionaries for links, make nodes from that
+# Enable additional filtering
+## View just run/pass or specific quarter(s) or fieldposition or down-dist scenarios
+
 import dash
 import dash_core_components as dcc
 import dash_html_components as html
 import pandas as pd
 import numpy as np
-import json
 import colorlover as cl
 import plotly.graph_objs as go
+import textwrap
 
 
 # Read play-by-play from local csv file
 pbp_file = '/home/welced12/googledrive/nfl_data/devl/pfr_parsedplays.csv'
 all_pbp = pd.read_csv(pbp_file)
 
+# Initialize text wrapper object
+wrapper = textwrap.TextWrapper(width=70)
 
 # Define node labels and colors
 node_label = {
@@ -36,6 +45,30 @@ colorscale = cl.to_rgb(cl.interp( cl.scales['9']['div']['RdYlGn'], 100 ))
 cscale = [rgb.replace(')',', 0.5)').replace('rgb','rgba') for rgb in colorscale]
 node_color = {n:colorscale[node_goodness[n]] for n in node_goodness}
 flow_color = {n:cscale[node_goodness[n]] for n in node_goodness}
+
+
+def summarize(pd):
+    time = "Q"+str(pd['quarter'])+" "+str(pd['qtr_time_remain_a'])
+    down = '1st' if pd['down']=='1' else '2nd' if pd['down']=='2' else '3rd' if pd['down']=='3' else '4th' if pd['down']=='4' else 'Xth'
+    downdist = down+" & "+str(pd['dist'])
+    
+    # Put together detail
+    try:
+        text_split = pd['detail_text'].split("brk, ")
+        names_split = pd['detail_a'].split(", ")
+        if len(text_split) == len(names_split):
+            desc = ''.join([names_split[i]+text_split[i] for i in range(len(text_split))])
+        elif len(names_split) > len(text_split):
+            desc = ''.join([names_split[i]+text_split[i] for i in range(len(text_split))])+names_split[-1]
+        elif len(text_split) > len(names_split):
+            desc = ''.join([text_split[i]+names_split[i] for i in range(len(names_split))])+text_split[-1]
+        txt = time+" - "+downdist+": "+desc
+        return txt
+    except:
+        if str(pd['detail']) != 'nan':
+            return str(pd['detail'])
+        else:
+            return str(pd['onecell'])
 
 
 # Functions for making dataframes that store info for diagrams
@@ -142,6 +175,7 @@ def make_sankey_dfs(df, offense='', defense='', verbosity=0):
     i = 0; j = 0
     nodes = {k:[] for k in node_label}
     flows = {}
+    links = []
     
     # Iterate through index. Step until we find valid source.
     # Then step from there until we find valid target.
@@ -149,7 +183,6 @@ def make_sankey_dfs(df, offense='', defense='', verbosity=0):
     # Add flow
     
     while j < len(idx):
-#    while j < 50:
 
         # Step through index until we find a valid source
         src = False
@@ -196,9 +229,12 @@ def make_sankey_dfs(df, offense='', defense='', verbosity=0):
             else:
                 src_1d_yd = int(src_play['off_fieldpos']) + int(src_play['dist'])
                 tgt_1d_yd = int(tgt_play['off_fieldpos']) + int(tgt_play['dist'])
-                if (int(tgt_play['down']) == 1) and (src_1d_yd != tgt_1d_yd):
-                    # First down by penalty
-                    tgt_node = 16
+                if (int(tgt_play['down']) == 1):
+                    if (src_1d_yd != tgt_1d_yd):
+                        # First down by penalty
+                        tgt_node = 16
+                    elif int(src_play['off_fieldpos']) <= int(tgt_play['off_fieldpos']):
+                        tgt_node = 16
                 else:
                     tgt_node = get_node( tgt_play )
         
@@ -242,6 +278,21 @@ def make_sankey_dfs(df, offense='', defense='', verbosity=0):
                 flows[ flow_tuple ] = [src_row]
             elif src_row not in flows[ flow_tuple ]:
                 flows[ flow_tuple ].append(src_row)
+
+        # Add link dict to list of links
+        ld = {
+            'source': src_node,
+            'target': tgt_node,
+            'value': 1,
+            'label': "<br>".join(wrapper.wrap(text=summarize(src_play))),
+            'color': cscale[node_goodness[tgt_node]]
+        }
+        condA = (offense=='' and defense=='')
+        condB = (src_play['poss']==offense)
+        condC = (src_play['def']==defense)
+        if ( condA | condB | condC ):
+            if node_label[src_node][0] != node_label[tgt_node][0]:
+                links.append(ld)
         
         
     # Consolidate nodes and flows dictionaries to proper DataFrames
@@ -295,12 +346,43 @@ def make_sankey_dfs(df, offense='', defense='', verbosity=0):
     nodes_df['Label'] = nodes_df.index.map(node_label)
     nodes_df['Color'] = nodes_df.index.map(node_color)
     flows_df['Color'] = flows_df.Target.map(flow_color)
+    #print(pd.DataFrame(links))
     
-    return nodes_df, flows_df
+    return nodes_df, flows_df, links
 
 
 # Function to create a Sankey diagram
-def sankey_diagram(nodes_df, flows_df):
+def sankey_diagram(nodes_df, flows_df, links, num_plays):
+
+    #### DEBUG ####
+    if (num_plays == '') or (int(num_plays)) >= len(links):
+        dist = len(links)
+    else:
+        dist = int(num_plays)
+    print(links[:dist])
+    linkset = pd.DataFrame(links[:dist])
+    nodes_used = []
+    node_freq = {}
+    for node in linkset['source'].unique():
+        nodes_used.append(node)
+    for node in linkset['target'].unique():
+        nodes_used.append(node)
+#    nodes_used = sorted(set(nodes_used))
+#    print('nodes_used:',nodes_used)
+    src_counts = linkset['source'].value_counts()
+    tgt_counts = linkset['target'].value_counts()
+    for n in nodes_used:
+        if (n in src_counts) and (n in tgt_counts):
+            node_freq[n] = max( src_counts[n], tgt_counts[n] )
+        elif n in src_counts:
+            node_freq[n] = src_counts[n]
+        elif n in tgt_counts:
+            node_freq[n] = tgt_counts[n]
+    print(linkset)
+    print(node_freq)
+    links = links[:dist]
+
+#    print(flows.sort_values(['Source','Target']))
     data = dict(
         type='sankey',
         node = dict(
@@ -314,13 +396,18 @@ def sankey_diagram(nodes_df, flows_df):
             color = nodes_df['Color']
         ),
         link = dict(
-            source = flows_df['Source'],
-            target = flows_df['Target'],
-            value = flows_df['Value'],
-            color = flows_df['Color'],
+            source = [x['source'] for x in links],
+            target = [x['target'] for x in links],
+            value = [x['value'] for x in links],
+            color = [x['color'] for x in links],
+            label = [x['label'] for x in links],
+#            source = flows_df['Source'],
+#            target = flows_df['Target'],
+#            value = flows_df['Value'],
+#            color = flows_df['Color'],
             line = dict(
                 color = 'black',
-                width = 0.25
+                width = 0.15
             )
         ),
         valueformat='i'
@@ -402,13 +489,25 @@ app.layout = html.Div([
 			options=[{'label': i, 'value': i} for i in sorted(all_pbp['season'].unique())],
 			value=all_pbp.season.max()
 		),
-		# Dropdown selector for selecting individual weeks
+		# Checklist for selecting individual weeks
 		html.Label('Week(s)'),
 		dcc.Checklist(
 			id='week-checklist',
 			options=[{'label': i, 'value': i} for i in sorted(all_pbp['week'].unique())],
 			values=[all_pbp.week.min()],
 			labelStyle={'display':'inline-block'}
+		),
+		html.Div([
+			html.Button('Select All', id='all-weeks-button', n_clicks_timestamp='0'),
+			html.Button('Select None', id='no-weeks-button', n_clicks_timestamp='0'),
+		], style={'columnCount':2}),
+		### DEBUG ###
+		html.Label('How many plays to use'),
+		dcc.Input(
+			id='num-plays-input',
+			placeholder='Enter a value...',
+			type='text',
+			value=''
 		)
 	], style={'columnCount':2}),
 
@@ -420,13 +519,28 @@ app.layout = html.Div([
 
 
 @app.callback(
+	dash.dependencies.Output('week-checklist', 'values'),
+	[dash.dependencies.Input('all-weeks-button', 'n_clicks_timestamp'),
+	dash.dependencies.Input('no-weeks-button', 'n_clicks_timestamp')]
+)
+def select_all_or_no_weeks(all_wk_tstamp, no_wk_tstamp):
+	if int(all_wk_tstamp) > int(no_wk_tstamp):
+		return [x+1 for x in range(17)]
+	elif int(all_wk_tstamp) < int(no_wk_tstamp):
+		return []
+	else:
+		return [1]
+
+
+@app.callback(
     dash.dependencies.Output('sankey-graphic', 'figure'),
     [dash.dependencies.Input('dropdown-offdef', 'value'),
 	dash.dependencies.Input('team-name', 'value'),
 	dash.dependencies.Input('season-dropdown', 'value'),
-	dash.dependencies.Input('week-checklist', 'values')]
+	dash.dependencies.Input('week-checklist', 'values'),
+	dash.dependencies.Input('num-plays-input', 'value')]
 )
-def update_graph(filter_by, teamname, season, weeks):
+def update_graph(filter_by, teamname, season, weeks, num_plays):
 
 	print("Our parameters are:")
 	print("filter_by",filter_by)
@@ -441,14 +555,17 @@ def update_graph(filter_by, teamname, season, weeks):
 	def_tm = teamname if filter_by=='defense' else ''
 	team_filtered_games = team_filter( time_filtered_games, offense=off_tm, defense=def_tm )
 
+	# Process plays for selected team and games
 	if filter_by == 'offense':
-		nodes, flows = make_sankey_dfs( team_filtered_games, offense=teamname )
+		nodes, flows, links = make_sankey_dfs( team_filtered_games, offense=teamname )
 	elif filter_by == 'defense':
-		nodes, flows = make_sankey_dfs( team_filtered_games, defense=teamname )
+		nodes, flows, links  = make_sankey_dfs( team_filtered_games, defense=teamname )
 	else:
-		print("filter_by:")
-		print(filter_by)
-	return sankey_diagram(nodes, flows)
+		print("filter_by:",filter_by)
+
+	# Additional filtering goes here
+
+	return sankey_diagram(nodes, flows, links, num_plays)
 
 if __name__ == '__main__':
     app.run_server(debug=True)
