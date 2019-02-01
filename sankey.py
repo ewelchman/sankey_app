@@ -2,7 +2,6 @@
 
 ### TODO
 # Allow for color by EPA, success, run/pass
-# Clean everything up to use the list of dictionaries for links, make nodes from that
 # Enable additional filtering
 ## View just run/pass or specific quarter(s) or fieldposition or down-dist scenarios
 
@@ -41,10 +40,17 @@ node_goodness = {
     10:10, 11:75, 12:0, 13:50,
     14:50, 15:50, 16:99
 }
+
 colorscale = cl.to_rgb(cl.interp( cl.scales['9']['div']['RdYlGn'], 100 ))
 cscale = [rgb.replace(')',', 0.5)').replace('rgb','rgba') for rgb in colorscale]
 node_color = {n:colorscale[node_goodness[n]] for n in node_goodness}
 flow_color = {n:cscale[node_goodness[n]] for n in node_goodness}
+
+nodelist = [{
+    'num':k,
+    'label':node_label[k],
+    'color':node_color[k]
+} for k in node_label]
 
 
 def summarize(pd):
@@ -258,27 +264,6 @@ def make_sankey_dfs(df, offense='', defense='', verbosity=0):
             print("Target:",tgt_node,node_label[tgt_node])
             print("")
         
-        # Add source nodes to dict of nodes
-        if src_node not in nodes:
-            nodes[src_node] = [src_row]
-        elif src_row not in nodes[src_node]:
-            nodes[src_node].append(src_row)
-        
-        # Add terminal nodes to dict of nodes as well
-        if tgt_node in ['Punt','FG Attempt','Turnover','End of Half','First Down/TD']:
-            if tgt_node not in nodes:
-                nodes[tgt_node] = [tgt_row]
-            elif tgt_row not in nodes[tgt_node]:
-                nodes[tgt_node].append(tgt_row)
-                
-        # Add flow to dict of flows, excluding acyclic flows
-        if node_label[src_node][0] != node_label[tgt_node][0]:
-            flow_tuple = (src_node, tgt_node)
-            if flow_tuple not in flows:
-                flows[ flow_tuple ] = [src_row]
-            elif src_row not in flows[ flow_tuple ]:
-                flows[ flow_tuple ].append(src_row)
-
         # Add link dict to list of links
         ld = {
             'source': src_node,
@@ -294,72 +279,18 @@ def make_sankey_dfs(df, offense='', defense='', verbosity=0):
             if node_label[src_node][0] != node_label[tgt_node][0]:
                 links.append(ld)
         
-        
-    # Consolidate nodes and flows dictionaries to proper DataFrames
-    if offense == '' and defense == '':
-        nodes_df = pd.Series({
-            k: len(nodes[k]) for k in nodes
-        })
-        flows_df = pd.DataFrame(
-            [
-                [a, b, len(flows[(a,b)])] for (a,b) in flows
-            ],
-            columns=['Source','Target','Value']
-        )
-    elif offense != '':
-        if verbosity > 0:
-            print("Filtering for offense",offense)
-        # For each of the nodes, select just the plays for the specified offense
-        nodes_df = pd.Series({
-            k: sum(
-                1 if df.loc[pid,'poss']==offense else 0 for pid in nodes[k]
-            ) for k in nodes
-        })
-        flows_df = pd.DataFrame(
-            [
-                [
-                    a, b, 
-                    sum(1 if df.loc[pid,'poss']==offense else 0 for pid in flows[(a,b)])
-                ] for (a,b) in flows
-            ],
-            columns=['Source','Target','Value']
-        )
-    elif defense != '':
-        if verbosity > 0:
-            print("Filtering for defense",defense)
-        nodes_df = pd.Series({
-            k: sum(
-                1 if df.loc[pid,'def']==defense else 0 for pid in nodes[k]
-            ) for k in nodes
-        })
-        flows_df = pd.DataFrame(
-            [
-                [
-                    a, b, 
-                    sum(1 if df.loc[pid,'def']==defense else 0 for pid in flows[(a,b)])
-                ] for (a,b) in flows
-            ],
-            columns=['Source','Target','Value']
-        )
-    nodes_df = pd.DataFrame(nodes_df,
-                            columns=['Value']).sort_index()
-    nodes_df['Label'] = nodes_df.index.map(node_label)
-    nodes_df['Color'] = nodes_df.index.map(node_color)
-    flows_df['Color'] = flows_df.Target.map(flow_color)
-    #print(pd.DataFrame(links))
-    
-    return nodes_df, flows_df, links
+    return links
 
 
 # Function to create a Sankey diagram
-def sankey_diagram(nodes_df, flows_df, links, num_plays):
+def sankey_diagram(links, nodelist, num_plays):
 
     #### DEBUG ####
     if (num_plays == '') or (int(num_plays)) >= len(links):
         dist = len(links)
     else:
         dist = int(num_plays)
-    print(links[:dist])
+    #print(links[:dist])
     linkset = pd.DataFrame(links[:dist])
     nodes_used = []
     node_freq = {}
@@ -378,11 +309,10 @@ def sankey_diagram(nodes_df, flows_df, links, num_plays):
             node_freq[n] = src_counts[n]
         elif n in tgt_counts:
             node_freq[n] = tgt_counts[n]
-    print(linkset)
+    #print(linkset)
     print(node_freq)
     links = links[:dist]
 
-#    print(flows.sort_values(['Source','Target']))
     data = dict(
         type='sankey',
         node = dict(
@@ -392,8 +322,8 @@ def sankey_diagram(nodes_df, flows_df, links, num_plays):
                 color = 'black',
                 width = 0.5
             ),
-            label = nodes_df['Label'],
-            color = nodes_df['Color']
+            label = [n['label'] for n in nodelist],
+            color = [n['color'] for n in nodelist]
         ),
         link = dict(
             source = [x['source'] for x in links],
@@ -401,10 +331,6 @@ def sankey_diagram(nodes_df, flows_df, links, num_plays):
             value = [x['value'] for x in links],
             color = [x['color'] for x in links],
             label = [x['label'] for x in links],
-#            source = flows_df['Source'],
-#            target = flows_df['Target'],
-#            value = flows_df['Value'],
-#            color = flows_df['Color'],
             line = dict(
                 color = 'black',
                 width = 0.15
@@ -557,15 +483,15 @@ def update_graph(filter_by, teamname, season, weeks, num_plays):
 
 	# Process plays for selected team and games
 	if filter_by == 'offense':
-		nodes, flows, links = make_sankey_dfs( team_filtered_games, offense=teamname )
+		links = make_sankey_dfs( team_filtered_games, offense=teamname )
 	elif filter_by == 'defense':
-		nodes, flows, links  = make_sankey_dfs( team_filtered_games, defense=teamname )
+		links = make_sankey_dfs( team_filtered_games, defense=teamname )
 	else:
 		print("filter_by:",filter_by)
 
 	# Additional filtering goes here
 
-	return sankey_diagram(nodes, flows, links, num_plays)
+	return sankey_diagram(links, nodelist, num_plays)
 
 if __name__ == '__main__':
     app.run_server(debug=True)
