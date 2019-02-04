@@ -45,18 +45,31 @@ colorscale = cl.to_rgb(cl.interp( cl.scales['9']['div']['RdYlGn'], 100 ))
 cscale = [rgb.replace(')',', 0.5)').replace('rgb','rgba') for rgb in colorscale]
 node_color = {n:colorscale[node_goodness[n]] for n in node_goodness}
 flow_color = {n:cscale[node_goodness[n]] for n in node_goodness}
-
 nodelist = [{
     'num':k,
     'label':node_label[k],
     'color':node_color[k]
 } for k in node_label]
 
+def get_color(links, color_by):
+	if color_by=='down/dist':
+		# Color was already set by default before
+		return links
+	elif color_by=='EPA':
+		for play in links:
+			play_epa = 75*float(play['epa'])+49
+			play_goodness = 0 if play_epa < 0 else 99 if play_epa > 99 else int(play_epa)
+			play['color'] = cscale[play_goodness]
+		return links
+
+	return links
 
 def summarize(pd):
     time = "Q"+str(pd['quarter'])+" "+str(pd['qtr_time_remain_a'])
     down = '1st' if pd['down']=='1' else '2nd' if pd['down']=='2' else '3rd' if pd['down']=='3' else '4th' if pd['down']=='4' else 'Xth'
     downdist = down+" & "+str(pd['dist'])
+    fieldpos = str(pd['location'])
+    score = "Offense leads by "+str(pd['offense_lead'])
     
     # Put together detail
     try:
@@ -68,8 +81,9 @@ def summarize(pd):
             desc = ''.join([names_split[i]+text_split[i] for i in range(len(text_split))])+names_split[-1]
         elif len(text_split) > len(names_split):
             desc = ''.join([text_split[i]+names_split[i] for i in range(len(names_split))])+text_split[-1]
-        txt = time+" - "+downdist+": "+desc
-        return txt
+        line1 = time+" - "+downdist+" at the "+fieldpos+": "+score
+        line2 = "<br>".join(wrapper.wrap(text=desc))
+        return line1+"<br>"+line2
     except:
         if str(pd['detail']) != 'nan':
             return str(pd['detail'])
@@ -82,6 +96,8 @@ def check_valid_source(play):
     
     # Check for normal down
     if play['down'] not in ['1','2','3','4']:
+        return False
+    elif (int(play['season']) <= 2016) and ("timeout #" in str(play['detail']).lower()):
         return False
     else:
         down = int(play['down'])
@@ -111,6 +127,8 @@ def check_valid_target(play):
         return True
     
     if play['down'] not in ['1','2','3','4']:
+        return False
+    elif (int(play['season']) <= 2016) and ("timeout #" in str(play['detail']).lower()):
         return False
     else:
         down = int(play['down'])
@@ -269,7 +287,9 @@ def make_sankey_dfs(df, offense='', defense='', verbosity=0):
             'source': src_node,
             'target': tgt_node,
             'value': 1,
-            'label': "<br>".join(wrapper.wrap(text=summarize(src_play))),
+            'label': summarize(src_play),
+#            'label': "<br>".join(wrapper.wrap(text=summarize(src_play))),
+            'epa': float(src_play['exp_pts_after'])-float(src_play['exp_pts_before']),
             'color': cscale[node_goodness[tgt_node]]
         }
         condA = (offense=='' and defense=='')
@@ -286,7 +306,7 @@ def make_sankey_dfs(df, offense='', defense='', verbosity=0):
 def sankey_diagram(links, nodelist, num_plays):
 
     #### DEBUG ####
-    if (num_plays == '') or (int(num_plays)) >= len(links):
+    if (num_plays == '') or (int(num_plays) >= len(links)):
         dist = len(links)
     else:
         dist = int(num_plays)
@@ -298,8 +318,6 @@ def sankey_diagram(links, nodelist, num_plays):
         nodes_used.append(node)
     for node in linkset['target'].unique():
         nodes_used.append(node)
-#    nodes_used = sorted(set(nodes_used))
-#    print('nodes_used:',nodes_used)
     src_counts = linkset['source'].value_counts()
     tgt_counts = linkset['target'].value_counts()
     for n in nodes_used:
@@ -377,6 +395,7 @@ def team_filter( df, offense='', defense='' ):
 	else:
 		return df
 
+
 ######## Here begins describing the layout #########################
 external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
 app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
@@ -385,11 +404,11 @@ app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
 app.layout = html.Div([
 	# Page Title/Heading
 	html.H1(
-		children='NFL Sankey',
+		children='NFL Game Flows',
 		style={'textAlign':'center'}
 	),
 	html.Div(
-		children='Visualizing game flow based on down and distance',
+		children='Visualizing offensive efficiency based on down and distance',
 		style={'textAlign':'center'}
 	),
 	# Selectors for Filters
@@ -426,6 +445,15 @@ app.layout = html.Div([
 		html.Div([
 			html.Button('Select All', id='all-weeks-button', n_clicks_timestamp='0'),
 			html.Button('Select None', id='no-weeks-button', n_clicks_timestamp='0'),
+		], style={'columnCount':2}),
+		# Radio selectors for link color
+		html.Label('Color by:'),
+		html.Div([
+			dcc.RadioItems(
+				id='color-by-selector',
+				options=[{'label':i, 'value':i} for i in ['down/dist','EPA']],
+				value='down/dist'
+			)
 		], style={'columnCount':2}),
 		### DEBUG ###
 		html.Label('How many plays to use'),
@@ -464,9 +492,10 @@ def select_all_or_no_weeks(all_wk_tstamp, no_wk_tstamp):
 	dash.dependencies.Input('team-name', 'value'),
 	dash.dependencies.Input('season-dropdown', 'value'),
 	dash.dependencies.Input('week-checklist', 'values'),
+	dash.dependencies.Input('color-by-selector', 'value'),
 	dash.dependencies.Input('num-plays-input', 'value')]
 )
-def update_graph(filter_by, teamname, season, weeks, num_plays):
+def update_graph(filter_by, teamname, season, weeks, color_by, num_plays):
 
 	print("Our parameters are:")
 	print("filter_by",filter_by)
@@ -486,10 +515,11 @@ def update_graph(filter_by, teamname, season, weeks, num_plays):
 		links = make_sankey_dfs( team_filtered_games, offense=teamname )
 	elif filter_by == 'defense':
 		links = make_sankey_dfs( team_filtered_games, defense=teamname )
-	else:
-		print("filter_by:",filter_by)
 
 	# Additional filtering goes here
+
+	# Choose link color
+	links = get_color(links, color_by)
 
 	return sankey_diagram(links, nodelist, num_plays)
 
