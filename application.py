@@ -16,7 +16,8 @@ import textwrap
 
 
 # Read play-by-play from local csv file
-pbp_file = '/home/welced12/googledrive/nfl_data/devl/pfr_parsedplays.csv'
+#pbp_file = '/home/welced12/googledrive/nfl_data/devl/pfr_parsedplays.csv'
+pbp_file = 'data.csv'
 all_pbp = pd.read_csv(pbp_file)
 
 # Initialize text wrapper object
