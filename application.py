@@ -379,7 +379,6 @@ def time_filter( df, season, weeks=[1] ):
 	]
 	subdf = df[time_filter]
 	print("Seasons selected by filter")
-	print(sorted(subdf.season.unique()))
 	return subdf
 
 def team_filter( df, offense='', defense='' ):
