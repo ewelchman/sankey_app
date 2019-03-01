@@ -289,7 +289,6 @@ def make_sankey_dfs(df, offense='', defense='', verbosity=0):
             'target': tgt_node,
             'value': 1,
             'label': summarize(src_play),
-#            'label': "<br>".join(wrapper.wrap(text=summarize(src_play))),
             'epa': float(src_play['exp_pts_after'])-float(src_play['exp_pts_before']),
             'color': cscale[node_goodness[tgt_node]]
         }
